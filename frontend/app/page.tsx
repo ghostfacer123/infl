@@ -1,39 +1,65 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
+import { createClient } from '@supabase/supabase-js'
 import SearchBar from '@/components/SearchBar'
 import ProductCard, { Product } from '@/components/ProductCard'
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000'
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+)
 
 export default function HomePage() {
   const [query, setQuery] = useState('')
   const [products, setProducts] = useState<Product[]>([])
   const [loading, setLoading] = useState(false)
-  const [error, setError] = useState('')
   const [searched, setSearched] = useState(false)
 
+  // Load all products on mount
+  useEffect(() => {
+    loadAllProducts()
+  }, [])
+
+  const loadAllProducts = async () => {
+    setLoading(true)
+    const { data, error } = await supabase
+      .from('products')
+      .select(`
+        *,
+        buy_links (*)
+      `)
+      .order('created_at', { ascending: false })
+
+    if (!error && data) {
+      setProducts(data as any)
+    }
+    setLoading(false)
+  }
+
   const handleSearch = async (searchQuery: string) => {
-    if (!searchQuery.trim()) return
+    if (!searchQuery.trim()) {
+      loadAllProducts()
+      return
+    }
 
     setQuery(searchQuery)
     setLoading(true)
-    setError('')
     setSearched(true)
 
-    try {
-      const res = await fetch(
-        `${API_URL}/search?q=${encodeURIComponent(searchQuery)}`
-      )
-      if (!res.ok) throw new Error(`Server error: ${res.status}`)
-      const data = await res.json()
-      setProducts(data.results ?? [])
-    } catch (err) {
-      setError('Failed to fetch results. Is the backend running?')
-      setProducts([])
-    } finally {
-      setLoading(false)
+    const { data, error } = await supabase
+      .from('products')
+      .select(`
+        *,
+        buy_links (*)
+      `)
+      .or(`product_name.ilike.%${searchQuery}%,brand.ilike.%${searchQuery}%,category.ilike.%${searchQuery}%,quote.ilike.%${searchQuery}%`)
+      .order('created_at', { ascending: false })
+
+    if (!error && data) {
+      setProducts(data as any)
     }
+    setLoading(false)
   }
 
   return (
@@ -62,16 +88,8 @@ export default function HomePage() {
           </div>
         )}
 
-        {/* Error */}
-        {!loading && error && (
-          <div className="text-center py-16">
-            <p className="text-2xl mb-2">⚠️</p>
-            <p className="text-red-500 font-medium">{error}</p>
-          </div>
-        )}
-
         {/* Empty state after search */}
-        {!loading && !error && searched && products.length === 0 && (
+        {!loading && searched && products.length === 0 && (
           <div className="text-center py-20">
             <p className="text-5xl mb-4">🔍</p>
             <h2 className="text-2xl font-semibold text-gray-700 mb-2">No products found</h2>
@@ -81,35 +99,11 @@ export default function HomePage() {
           </div>
         )}
 
-        {/* Default landing state */}
-        {!loading && !searched && (
-          <div className="text-center py-20">
-            <p className="text-6xl mb-6">✨</p>
-            <h2 className="text-2xl font-semibold text-gray-700 mb-3">
-              Search for anything
-            </h2>
-            <p className="text-gray-500 max-w-md mx-auto">
-              Try &quot;Charlotte Tilbury&quot;, &quot;Sarah Hany skincare&quot;, or &quot;best foundation&quot;
-            </p>
-            <div className="flex flex-wrap gap-2 justify-center mt-6">
-              {['skincare', 'makeup', 'haircare', 'fragrance'].map((tag) => (
-                <button
-                  key={tag}
-                  onClick={() => handleSearch(tag)}
-                  className="px-4 py-2 rounded-full bg-pink-100 text-pink-700 hover:bg-pink-200 transition-colors capitalize font-medium text-sm"
-                >
-                  {tag}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-
         {/* Results grid */}
-        {!loading && !error && products.length > 0 && (
+        {!loading && products.length > 0 && (
           <>
             <p className="text-gray-500 mb-6 font-medium">
-              Found {products.length} product{products.length !== 1 ? 's' : ''} for &quot;{query}&quot;
+              {query ? `Found ${products.length} product${products.length !== 1 ? 's' : ''} for "${query}"` : `Showing all ${products.length} products`}
             </p>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
               {products.map((product, index) => (
