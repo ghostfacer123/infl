@@ -2,23 +2,28 @@
 FastAPI backend for the Influencer Product Search Platform.
 
 Endpoints:
-    GET /                    - Health check
-    GET /search?q={query}    - Smart product search
-    GET /products            - List all products
-    GET /influencers         - List all influencers
-    GET /categories          - List all categories
+    GET  /                    - Health check
+    GET  /search?q={query}    - Smart product search
+    GET  /products            - List all products
+    GET  /influencers         - List all influencers
+    GET  /categories          - List all categories
+    POST /ask                 - AI-powered Q&A
 
 Environment variables:
     SUPABASE_URL
     SUPABASE_KEY
+    GROQ_API_KEY
 """
 
+import json
 import os
 from typing import Optional
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from groq import Groq
+from pydantic import BaseModel
 
 load_dotenv()
 
@@ -35,6 +40,13 @@ from supabase import create_client, Client  # noqa: E402
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+# ── Groq AI client ─────────────────────────────────────────────────────────────
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+if not GROQ_API_KEY:
+    raise RuntimeError("GROQ_API_KEY environment variable must be set.")
+
+groq_client = Groq(api_key=GROQ_API_KEY)
+
 # ── App ────────────────────────────────────────────────────────────────────────
 app = FastAPI(
     title="Influencer Product Search API",
@@ -49,6 +61,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ── Request models ─────────────────────────────────────────────────────────────
+
+class QuestionRequest(BaseModel):
+    question: str
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -194,6 +212,112 @@ def list_categories():
             {row["category"] for row in (resp.data or []) if row.get("category")}
         )
         return {"count": len(categories), "results": categories}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/ask")
+def ask_ai(req: QuestionRequest):
+    """
+    AI-powered Q&A endpoint.
+
+    Ask natural language questions like:
+    - "What does Sarah Hany use for her eyes?"
+    - "Best foundation recommended by influencers?"
+    - Arabic questions supported!
+
+    Returns:
+        {
+            "question": str,
+            "answer": str,  # AI-generated conversational answer
+            "products": list,  # Recommended products with buy_links
+            "total_products": int
+        }
+    """
+    try:
+        # 1. Get all products with buy links
+        resp = supabase.table("products").select("*").execute()
+        products = resp.data or []
+        products = enrich_products(products)
+
+        # 2. Build context for AI
+        context = "Products mentioned by influencers:\n\n"
+        for p in products:
+            context += f"• {p['product_name']}"
+            if p.get('brand'):
+                context += f" by {p['brand']}"
+            context += f" (Category: {p.get('category', 'other')})\n"
+            context += f"  Mentioned by: {p['influencer_name']}\n"
+            if p.get('quote'):
+                context += f"  Quote: \"{p['quote']}\"\n"
+            context += "\n"
+
+        # 3. AI System Prompt
+        system_prompt = """You are a helpful beauty assistant helping users find products used by Egyptian and MENA influencers.
+
+Answer questions naturally and conversationally in English or Arabic (match the user's language).
+
+When answering:
+- Be friendly and enthusiastic 💄✨
+- Mention which influencer uses the product
+- Include relevant quotes when available
+- Recommend multiple products when appropriate
+- If you don't know, say so honestly
+
+CRITICAL: Return ONLY valid JSON with this EXACT structure:
+{
+  "answer": "Your friendly conversational answer here",
+  "recommended_products": ["Exact Product Name 1", "Exact Product Name 2"]
+}
+
+Do NOT include markdown code fences or any text outside the JSON."""
+
+        # 4. Call Groq AI
+        completion = groq_client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f"{context}\n\nQuestion: {req.question}"}
+            ],
+            temperature=0.7,
+            max_tokens=1024,
+        )
+
+        # 5. Parse AI response
+        raw = completion.choices[0].message.content.strip()
+
+        # Clean markdown code fences if present
+        if raw.startswith("```"):
+            lines = raw.split("\n")
+            if len(lines) > 2:
+                raw = "\n".join(lines[1:-1])  # Remove first and last line
+            if raw.startswith("json"):
+                raw = raw[4:].strip()
+
+        ai_response = json.loads(raw.strip())
+
+        # 6. Find recommended products (fuzzy matching)
+        recommended_names = ai_response.get("recommended_products", [])
+        recommended = []
+        products_lower = [(p, p['product_name'].lower()) for p in products]
+
+        for name in recommended_names:
+            name_lower = name.lower()
+            for p, p_name_lower in products_lower:
+                if name_lower in p_name_lower or p_name_lower in name_lower:
+                    if p not in recommended:  # Avoid duplicates
+                        recommended.append(p)
+                    break
+
+        return {
+            "question": req.question,
+            "answer": ai_response.get("answer", ""),
+            "products": recommended,
+            "total_products": len(recommended)
+        }
+
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=500, detail=f"AI returned invalid JSON: {str(exc)}")
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
