@@ -10,11 +10,16 @@ const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 )
 
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+
 export default function HomePage() {
   const [query, setQuery] = useState('')
   const [products, setProducts] = useState<Product[]>([])
   const [loading, setLoading] = useState(false)
   const [searched, setSearched] = useState(false)
+  const [error, setError] = useState('')
+  const [aiMode, setAiMode] = useState(true)
+  const [aiAnswer, setAiAnswer] = useState('')
 
   // Load all products on mount
   useEffect(() => {
@@ -38,28 +43,41 @@ export default function HomePage() {
   }
 
   const handleSearch = async (searchQuery: string) => {
-    if (!searchQuery.trim()) {
-      loadAllProducts()
-      return
-    }
+    if (!searchQuery.trim()) return
 
     setQuery(searchQuery)
     setLoading(true)
+    setError('')
     setSearched(true)
+    setAiAnswer('')
 
-    const { data, error } = await supabase
-      .from('products')
-      .select(`
-        *,
-        buy_links (*)
-      `)
-      .or(`product_name.ilike.%${searchQuery}%,brand.ilike.%${searchQuery}%,category.ilike.%${searchQuery}%,quote.ilike.%${searchQuery}%`)
-      .order('created_at', { ascending: false })
-
-    if (!error && data) {
-      setProducts(data as any)
+    try {
+      if (aiMode) {
+        // AI-powered Q&A
+        const res = await fetch(`${API_URL}/ask`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ question: searchQuery })
+        })
+        if (!res.ok) throw new Error(`Server error: ${res.status}`)
+        const data = await res.json()
+        setAiAnswer(data.answer)
+        setProducts(data.products ?? [])
+      } else {
+        // Regular search
+        const res = await fetch(
+          `${API_URL}/search?q=${encodeURIComponent(searchQuery)}`
+        )
+        if (!res.ok) throw new Error(`Server error: ${res.status}`)
+        const data = await res.json()
+        setProducts(data.results ?? [])
+      }
+    } catch (err) {
+      setError('Failed to fetch results. Is the backend running?')
+      setProducts([])
+    } finally {
+      setLoading(false)
     }
-    setLoading(false)
   }
 
   return (
@@ -88,8 +106,28 @@ export default function HomePage() {
           </div>
         )}
 
+        {/* Error state */}
+        {!loading && error && (
+          <div className="text-center py-10">
+            <p className="text-red-500">{error}</p>
+          </div>
+        )}
+
+        {/* AI Answer */}
+        {!loading && aiAnswer && (
+          <div className="max-w-3xl mx-auto mb-8 bg-gradient-to-r from-purple-50 to-pink-50 border-2 border-purple-200 rounded-2xl p-6">
+            <div className="flex items-start gap-3">
+              <span className="text-3xl">💡</span>
+              <div>
+                <h3 className="font-bold text-purple-900 mb-2">AI Answer:</h3>
+                <p className="text-gray-700 leading-relaxed">{aiAnswer}</p>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Empty state after search */}
-        {!loading && searched && products.length === 0 && (
+        {!loading && searched && products.length === 0 && !error && (
           <div className="text-center py-20">
             <p className="text-5xl mb-4">🔍</p>
             <h2 className="text-2xl font-semibold text-gray-700 mb-2">No products found</h2>
@@ -103,7 +141,10 @@ export default function HomePage() {
         {!loading && products.length > 0 && (
           <>
             <p className="text-gray-500 mb-6 font-medium">
-              {query ? `Found ${products.length} product${products.length !== 1 ? 's' : ''} for "${query}"` : `Showing all ${products.length} products`}
+              {aiAnswer
+                ? `Found ${products.length} recommended product${products.length !== 1 ? 's' : ''}`
+                : `Found ${products.length} product${products.length !== 1 ? 's' : ''} for "${query}"`
+              }
             </p>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
               {products.map((product, index) => (
