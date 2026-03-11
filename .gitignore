@@ -19,6 +19,9 @@ data/
 !influencers.json
 !package.json
 
+# Temp
+check_*.py
+
 # IDE
 .vscode/
 .idea/
